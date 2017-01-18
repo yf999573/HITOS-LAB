@@ -1,0 +1,108 @@
+#define   __LIBRARY__
+#include <unistd.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+_syscall2(sem_t*, sem_open, const char *, name, unsigned int, value);
+_syscall1(int, sem_wait, sem_t*, sem);
+_syscall1(int, sem_post, sem_t*, sem);
+_syscall1(int, sem_unlink, const char *, name);
+
+#define NUMBERS 520
+#define CONSUMERS 5
+#define BUFFERSIZE 10
+
+int main()
+{
+	sem_t *empty, *full, *mutex;
+	int fno;
+	int number, consumer_index, consumer_task;
+	int data;
+	pid_t pid;
+	int buf_out = 0;
+	int buf_in = 0;
+
+	if ((mutex = sem_open("carmutex", 1)) == SEM_FAILED)
+	{
+		perror("sem_open() error\n");
+		return -1;
+	}
+	if ((empty = sem_open("carempty", 10)) == SEM_FAILED)
+	{
+		perror("sem_open() error\n");
+		return -1;
+	}
+	if ((full = sem_open("carfull", 0)) == SEM_FAILED)
+	{
+		perror("sem_open() error\n");
+		return -1;
+	}
+	fno = open("buffer.dat", O_CREAT | O_RDWR | O_TRUNC, 0666);
+
+	lseek(fno, 10 * sizeof(int), SEEK_SET);
+	write(fno, (char *)&buf_out, sizeof(int));
+
+	if ((pid = fork()) == 0)
+	{
+		for (number = 0; number < NUMBERS; number++)
+		{
+			sem_wait(empty);
+			sem_wait(mutex);
+
+			lseek(fno, buf_in * sizeof(int), SEEK_SET);
+			write(fno, (char *)&number, sizeof(int));
+			buf_in = (buf_in + 1) % BUFFERSIZE;
+
+			sem_post(mutex);
+			sem_post(full);
+		}
+		return 0;
+	}
+	else if (pid < 0)
+	{
+		perror("Failed to fork!\n");
+		return -1;
+	}
+
+	for (consumer_index = 0; consumer_index < CONSUMERS; consumer_index++)
+	{
+		if ((pid = fork()) == 0)
+		{
+			for (consumer_task = 0; consumer_task < NUMBERS / CONSUMERS; consumer_task++)
+			{
+				sem_wait(full);
+				sem_wait(mutex);
+
+				lseek(fno, 10 * sizeof(int), SEEK_SET);
+				read(fno, (char *)&buf_out, sizeof(int));
+
+				lseek(fno, buf_out * sizeof(int), SEEK_SET);
+				read(fno, (char *)&data, sizeof(int));
+
+				buf_out = (buf_out + 1) % BUFFERSIZE;
+				lseek(fno, 10 * sizeof(int), SEEK_SET);
+				write(fno, (char *)&buf_out, sizeof(int));
+
+				sem_post(mutex);
+				sem_post(empty);
+
+				printf("%d: %d\n", getpid(), data);
+				fflush(stdout);
+			}
+			return 0;
+		}
+		else if (pid < 0)
+		{
+			perror("Failed to fork!\n");
+			return -1;
+		}
+	}
+	wait(NULL);
+	sem_unlink("carfull");
+	sem_unlink("carempty");
+	sem_unlink("carmutex");
+	close(fno);
+	return 0;
+}
